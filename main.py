@@ -1,4 +1,5 @@
 from fastmcp import FastMCP
+import aiosqlite
 import sqlite3
 import os
 
@@ -23,46 +24,54 @@ mcp = FastMCP("ExpenseTracker", host="0.0.0.0", port=8000)
 
 
 def init_db():
-    with sqlite3.connect(DB_FILE_PATH) as c:
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS expenses(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT NOT NULL,
-                amount REAL NOT NULL,
-                category TEXT NOT NULL,
-                subcategory TEXT DEFAULT '',
-                note TEXT DEFAULT ''
-            )
-        """)
-        
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS credits(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT NOT NULL,
-                amount REAL NOT NULL,
-                category TEXT NOT NULL,
-                subcategory TEXT DEFAULT '',
-                note TEXT DEFAULT ''
-            )
-        """)
+    
+    try:
+        with sqlite3.connect(DB_FILE_PATH) as c:
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS expenses(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    category TEXT NOT NULL,
+                    subcategory TEXT DEFAULT '',
+                    note TEXT DEFAULT ''
+                )
+            """)
+            
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS credits(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    category TEXT NOT NULL,
+                    subcategory TEXT DEFAULT '',
+                    note TEXT DEFAULT ''
+                )
+            """)
+            
+            c.execute("INSERT OR IGNORE INTO expenses(date, amount, category) VALUES ('2000-01-01', 0, 'test')")
+            c.execute("DELETE FROM expenses WHERE category = 'test'")
+            print("Database initialized successfully with write access")
+    except Exception as e:
+        print(f"Database initialization error: {e}")
+        raise
 
 init_db()
 
 @mcp.tool()
-def add_expense(date, amount, category, subcategory="", note=""):
+async def add_expense(date, amount, category, subcategory="", note=""):
     '''Add a new expense entry to the database.'''
     try:
-        with sqlite3.connect(DB_FILE_PATH) as c:
-            # Ensure database is writable
-            c.execute("PRAGMA journal_mode=WAL")
-            c.execute("PRAGMA synchronous=NORMAL")
+        async with aiosqlite.connect(DB_FILE_PATH) as c:
             
-            cur = c.execute(
+            cur = await c.execute(
                 "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
                 (date, amount, category, subcategory, note)
             )
-            c.commit()  # Explicit commit
-            return {"status": "ok", "id": cur.lastrowid}
+            expense_id = cur.lastrowid
+            await c.commit()  # Explicit commit
+            return {"status": "ok", "id": expense_id}
     except sqlite3.OperationalError as e:
         if "read-only" in str(e).lower():
             return {"status": "error", "message": f"Database is read-only: {e}"}
@@ -72,10 +81,10 @@ def add_expense(date, amount, category, subcategory="", note=""):
     
     
 @mcp.tool()
-def list_expenses(start_date, end_date):
+async def list_expenses(start_date, end_date):
     '''List expense entries within an inclusive date range.'''
-    with sqlite3.connect(DB_FILE_PATH) as c:
-        cur = c.execute(
+    async with aiosqlite.connect(DB_FILE_PATH) as c:
+        cur = await c.execute(
             """
             SELECT id, date, amount, category, subcategory, note
             FROM expenses
@@ -88,10 +97,10 @@ def list_expenses(start_date, end_date):
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 @mcp.tool()
-def remove_expenses(date, amount, category, subcategory="", note=""):
+async def remove_expenses(date, amount, category, subcategory="", note=""):
     """Delete expenses matching the specified criteria"""
-    with sqlite3.connect(DB_FILE_PATH) as c:
-        cur = c.execute(
+    async with aiosqlite.connect(DB_FILE_PATH) as c:
+        cur = await c.execute(
             """
             DELETE FROM expenses 
             WHERE date = ? AND amount = ? AND category = ? AND subcategory = ? AND note = ?
@@ -104,7 +113,7 @@ def remove_expenses(date, amount, category, subcategory="", note=""):
             return {"status": "error", "message": "No matching expenses found"}
 
 @mcp.tool()
-def edit_expenses(expense_id, date, amount, category, subcategory="", note=""):
+async def edit_expenses(expense_id, date, amount, category, subcategory="", note=""):
     """Edit an existing expense. Only provide values for fields you want to update."""
     update_fields = []
     params = []
@@ -133,17 +142,17 @@ def edit_expenses(expense_id, date, amount, category, subcategory="", note=""):
     # Build the UPDATE query
     query = f"UPDATE expenses SET {', '.join(update_fields)} WHERE id = ?"
     
-    with sqlite3.connect(DB_FILE_PATH) as c:
-        cur = c.execute(query, params)
+    async with aiosqlite.connect(DB_FILE_PATH) as c:
+        cur = await c.execute(query, params)
         if cur.rowcount > 0:
             return {"status": "ok", "message": f"Expense {expense_id} updated successfully"}
         else:
             return {"status": "error", "message": f"Expense {expense_id} not found"}
 
 @mcp.tool()
-def summarize(start_date, end_date, category=None):
+async def summarize(start_date, end_date, category=None):
     '''Summarize expenses by category within an inclusive date range.'''
-    with sqlite3.connect(DB_FILE_PATH) as c:
+    async with aiosqlite.connect(DB_FILE_PATH) as c:
         query = (
             """
             SELECT category, SUM(amount) AS total_amount
@@ -159,7 +168,7 @@ def summarize(start_date, end_date, category=None):
 
         query += " GROUP BY category ORDER BY category ASC"
 
-        cur = c.execute(query, params)
+        cur = await c.execute(query, params)
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
@@ -169,7 +178,7 @@ def summarize(start_date, end_date, category=None):
 
 
 @mcp.tool()
-def credit_amount(date, amount, category, subcategory="", note=""):
+async def credit_amount(date, amount, category, subcategory="", note=""):
     """Add a new credit/income entry to the database.
     
     Args:
@@ -180,8 +189,8 @@ def credit_amount(date, amount, category, subcategory="", note=""):
         note (str, optional): Additional notes
     """
     try:
-        with sqlite3.connect(DB_FILE_PATH) as c:
-            cur = c.execute(
+        with aiosqlite.connect(DB_FILE_PATH) as c:
+            cur = await c.execute(
                 """
                 INSERT INTO credits (date, amount, category, subcategory, note) 
                 VALUES (?, ?, ?, ?, ?)
@@ -195,10 +204,10 @@ def credit_amount(date, amount, category, subcategory="", note=""):
     
     
 @mcp.tool()
-def list_credits(start_date, end_date):
+async def list_credits(start_date, end_date):
     '''List credits entries within an inclusive date range.'''
-    with sqlite3.connect(DB_FILE_PATH) as c:
-        cur = c.execute(
+    with aiosqlite.connect(DB_FILE_PATH) as c:
+        cur = await c.execute(
             """
             SELECT id, date, amount, category, subcategory, note
             FROM credits
@@ -211,10 +220,10 @@ def list_credits(start_date, end_date):
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 @mcp.tool()
-def remove_credits(date, amount, category, subcategory="", note=""):
+async def remove_credits(date, amount, category, subcategory="", note=""):
     """Delete expenses matching the specified criteria"""
-    with sqlite3.connect(DB_FILE_PATH) as c:
-        cur = c.execute(
+    with aiosqlite.connect(DB_FILE_PATH) as c:
+        cur = await c.execute(
             """
             DELETE FROM credits 
             WHERE date = ? AND amount = ? AND category = ? AND subcategory = ? AND note = ?
@@ -227,7 +236,7 @@ def remove_credits(date, amount, category, subcategory="", note=""):
             return {"status": "error", "message": "No matching expenses found"}
 
 @mcp.tool()
-def edit_credits(expense_id, date, amount, category, subcategory="", note=""):
+async def edit_credits(expense_id, date, amount, category, subcategory="", note=""):
     """Edit an existing expense. Only provide values for fields you want to update."""
     update_fields = []
     params = []
@@ -256,17 +265,17 @@ def edit_credits(expense_id, date, amount, category, subcategory="", note=""):
     # Build the UPDATE query
     query = f"UPDATE credits SET {', '.join(update_fields)} WHERE id = ?"
     
-    with sqlite3.connect(DB_FILE_PATH) as c:
-        cur = c.execute(query, params)
+    with aiosqlite.connect(DB_FILE_PATH) as c:
+        cur = await c.execute(query, params)
         if cur.rowcount > 0:
             return {"status": "ok", "message": f"credits {expense_id} updated successfully"}
         else:
             return {"status": "error", "message": f"credits {expense_id} not found"}
     
 @mcp.tool()
-def summarize_credit(start_date, end_date, category=None):
+async def summarize_credit(start_date, end_date, category=None):
     '''Summarize expenses by category within an inclusive date range.'''
-    with sqlite3.connect(DB_FILE_PATH) as c:
+    with aiosqlite.connect(DB_FILE_PATH) as c:
         query = (
             """
             SELECT category, SUM(amount) AS total_amount
@@ -282,7 +291,7 @@ def summarize_credit(start_date, end_date, category=None):
 
         query += " GROUP BY category ORDER BY category ASC"
 
-        cur = c.execute(query, params)
+        cur = await c.execute(query, params)
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
