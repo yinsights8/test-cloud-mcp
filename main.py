@@ -51,12 +51,25 @@ init_db()
 @mcp.tool()
 def add_expense(date, amount, category, subcategory="", note=""):
     '''Add a new expense entry to the database.'''
-    with sqlite3.connect(DB_FILE_PATH) as c:
-        cur = c.execute(
-            "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
-            (date, amount, category, subcategory, note)
-        )
-        return {"status": "ok", "id": cur.lastrowid}
+    try:
+        with sqlite3.connect(DB_FILE_PATH) as c:
+            # Ensure database is writable
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA synchronous=NORMAL")
+            
+            cur = c.execute(
+                "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
+                (date, amount, category, subcategory, note)
+            )
+            c.commit()  # Explicit commit
+            return {"status": "ok", "id": cur.lastrowid}
+    except sqlite3.OperationalError as e:
+        if "read-only" in str(e).lower():
+            return {"status": "error", "message": f"Database is read-only: {e}"}
+        raise
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    
     
 @mcp.tool()
 def list_expenses(start_date, end_date):

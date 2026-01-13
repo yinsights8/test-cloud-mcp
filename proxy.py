@@ -2,7 +2,7 @@ from fastmcp import FastMCP
 
 
 mcp = FastMCP.as_proxy(
-    "https://test-remote-mcp-cloud.fastmcp.app/mcp",
+    "https://annual-cyan-gazelle.fastmcp.app/mcp",
     name = "remote test proxy"
 )
 
