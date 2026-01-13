@@ -1,5 +1,6 @@
 from fastmcp import FastMCP
 import aiosqlite
+import tempfile
 import sqlite3
 import os
 
@@ -17,7 +18,8 @@ CATEGORIES = "categories.json"  # required
 if not os.path.exists(DB_PATH):
     os.makedirs(DB_PATH, exist_ok=True)
 
-DB_FILE_PATH = os.path.join(DB_PATH, DB_NAME)
+TEMP_DIR = tempfile.gettempdir()
+DB_FILE_PATH = os.path.join(TEMP_DIR, DB_NAME)
 CATEGORIES_PATH = os.path.join(DB_PATH, CATEGORIES)  # manually create categories to present auto selection by llm
 
 mcp = FastMCP("ExpenseTracker", host="0.0.0.0", port=8000)
